@@ -13,7 +13,7 @@ st.write("Click the button below, speak your prompt, and stop recording to submi
 # It will look for the API key in your Streamlit Cloud Settings secrets manager
 try:
     llm = ChatGroq(
-        model="llama-3.1-70b-versatile",
+        model="qwen/qwen3.8-27b",
         temperature=0.7,
     )
 except Exception as e:
