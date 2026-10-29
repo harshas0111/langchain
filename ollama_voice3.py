@@ -15,6 +15,7 @@ try:
     llm = ChatGroq(
         model="qwen/qwen3.8-27b",
         temperature=0.7,
+         max_tokens=200,
     )
 except Exception as e:
     st.error("API Key missing. Please configure GROQ_API_KEY in the Streamlit Advanced Settings.")
