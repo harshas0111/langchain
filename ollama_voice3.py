@@ -1,66 +1,126 @@
+import os
 import streamlit as st
-from streamlit_mic_recorder import mic_recorder
-from langchain_groq import ChatGroq
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_ollama import ChatOllama
+from langchain_core.documents import Document
+import speech_recognition as sr
+import pyttsx3
 
-# 1. Page Configuration & Title
-st.set_page_config(page_title="Tennis Rules AI Assistant", page_icon="🎾", layout="centered")
-st.title("🎾 Tennis Rules Voice Assistant")
-st.write("Click the button, ask a question about tennis rules, and stop recording to submit.")
-
-# 2. Initialize the Cloud AI Engine with Free-Tier Safety Limits
-try:
-    llm = ChatGroq(
-        model="qwen/qwen3.8-27b",
-        temperature=0.2,   # Low temperature keeps the answers highly factual
-        max_tokens=200,    # Fixes the 429 Output Tokens Per Minute (OTPM) rate limit error
-    )
-except Exception as e:
-    st.error("API Key missing. Please configure GROQ_API_KEY in the Streamlit Advanced Settings.")
-
-# 3. Inject the Tennis Rules Document into the AI's System Memory
-system_prompt = """
-You are a precise Tennis Rules Expert. Answer the user's question accurately using ONLY the rules provided below. 
-If the answer cannot be found in these rules, politely tell the user that you don't have that specific detail.
-
-TENNIS RULES CONTEXT:
-1. OBJECTIVE: Played as singles (1v1, 27ft wide) or doubles (2v2, 36ft wide). Hit ball over net into opponent's court.
-2. SERVING: Server stands behind baseline, hits diagonally into opposite service box. Alternates right/left sides after each point. Two attempts allowed. Double fault loses point. Let (clips net, lands in box) is replayed. Ace is untouched legal serve. Server's score called first.
-3. SCORING: 0 = Love, 1 = 15, 2 = 30, 3 = 40. Need 4 points and a 2-point lead to win. 40-40 is Deuce. Advantage scoring requires 2 consecutive points from deuce to win (Ad-in: server advantage; Ad-out: receiver advantage). Some matches use no-ad scoring.
-4. MATCH STRUCTURE: Set won by first to 6 games with a 2-game lead. Tiebreak at 6-6. Best of 3 sets typically (best of 5 in some men's Grand Slams). Change ends after odd-numbered games (1, 3, 5).
-5. RALLIES & LOSING POINTS: Ball can bounce at most once. Lines count as IN. You lose the point if the ball bounces twice, goes out of bounds, you hit it twice, touch the net during a point, or hit it before it crosses the net. Ball touching the net during a rally is legal if it lands inside.
-6. SHOTS: Forehand (dominant side), Backhand (across body), Drop shot (soft over net), Smash (forceful overhead), Slice (backspin, stays low).
-"""
-
-# 4. Render Browser Microphone Component
-audio_data = mic_recorder(
-    start_prompt="🎵 Start Recording",
-    stop_prompt="🛑 Stop Recording",
-    just_once=True,
-    key="tennis_mic"
+# --- WINDOWS 11 STYLING & CONFIG ---
+st.set_page_config(
+    page_title="Voice AI Assistant",
+    page_icon="🎙️",
+    layout="centered"
 )
 
-# 5. Process Input when recording finishes
-if audio_data and 'bytes' in audio_data:
-    st.audio(audio_data['bytes'], format="audio/wav")
+st.title("🎙️ Voice-Enabled AI Document Assistant")
+st.caption("Talk to your local knowledge base using LangChain, Ollama (Llama 3.2), and Voice Synthesis.")
+
+# --- DOCUMENT LOADER ---
+def load_local_documents(docs_dir="./docs"):
+    documents = []
+    if not os.path.exists(docs_dir):
+        os.makedirs(docs_dir)
+        return documents
+        
+    for filename in os.listdir(docs_dir):
+        if filename.endswith(".txt"):
+            file_path = os.path.join(docs_dir, filename)
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    text_content = f.read()
+                    if text_content.strip():
+                        documents.append(Document(page_content=text_content, metadata={"source": filename}))
+            except Exception as e:
+                st.sidebar.error(f"Error reading {filename}: {e}")
+    return documents
+
+# --- TEXT TO SPEECH (WINDOWS NATIVE) ---
+def speak_text(text):
+    """Speaks the response text using the offline pyttsx3 engine."""
+    try:
+        engine = pyttsx3.init()
+        engine.say(text)
+        engine.runAndWait()
+    except Exception as e:
+        st.sidebar.warning(f"Audio playback issue: {e}")
+
+# --- SYSTEM INITIALIZATION ---
+docs_dir = "./docs"
+docs = load_local_documents(docs_dir)
+
+# Sidebar Knowledge Base Context
+st.sidebar.header("📚 Knowledge Base")
+if docs:
+    st.sidebar.success(f"Loaded {len(docs)} document(s) successfully.")
+    with st.sidebar.expander("View Active Files"):
+        for doc in docs:
+            st.sidebar.write(f"- {doc.metadata['source']}")
+else:
+    st.sidebar.error(f"The '{docs_dir}' directory is empty!")
+    st.sidebar.info("Drop '.txt' files into the `./docs` folder to provide context.")
+
+# Initialize the RAG Chain if context exists
+if docs:
+    context_text = "\n\n".join([doc.page_content for doc in docs])
     
-    with st.spinner("Processing your voice input..."):
-        # Simulated voice transcription pipeline for the execution frame
-        mocked_question = "What happens if a serve hits the net line but falls in the right box?"
+    # Initialize Ollama
+    llm = ChatOllama(model="llama3.2", temperature=0.3)
+    
+    prompt = ChatPromptTemplate.from_template(
+        "You are a professional assistant answering questions based strictly on the following text context.\n\n"
+        "Context:\n{context}\n\n"
+        "Question: {question}\n\n"
+        "Answer:"
+    )
+    chain = prompt | llm | StrOutputParser()
+
+    # --- PRESENTATION INTERFACE ---
+    st.write("### 🎛️ Hybrid Input Dashboard")
+    
+    # Native Streamlit audio recorder (No PyAudio required!)
+    audio_file = st.audio_input("🎤 Record your question:")
+    
+    # Client Fallback Textbox
+    text_query = st.text_input("💬 Or type your question here if the room is too loud:", placeholder="Ask something about the documents...")
+
+    user_query = None
+
+    # Priority 1: Handle text input if typed
+    if text_query:
+        user_query = text_query
+        st.chat_message("user").write(f"**You typed:** {user_query}")
+
+    # Priority 2: Handle voice input if recorded
+    elif audio_file is not None:
+        temp_audio_path = "temp_windows_voice.wav"
         
-        st.info(f"🗣️ **Your Question:** {mocked_question}")
+        # Read the raw browser bytes and save safely to local workspace
+        with open(temp_audio_path, "wb") as f:
+            f.write(audio_file.getbuffer())
+            
+        recognizer = sr.Recognizer()
+        with st.spinner("🧠 Transcribing voice input..."):
+            try:
+                with sr.AudioFile(temp_audio_path) as source:
+                    audio_data = recognizer.record(source)
+                user_query = recognizer.recognize_google(audio_data)
+                st.chat_message("user").write(f"**You said:** {user_query}")
+            except sr.UnknownValueError:
+                st.error("❌ Audio could not be understood. Try speaking closer to the microphone or use the text box.")
+            finally:
+                if os.path.exists(temp_audio_path):
+                    os.remove(temp_audio_path)
+
+    # Process whichever input was captured
+    if user_query:
+        with st.spinner("🤖 Generating answer from local knowledge base..."):
+            response = chain.invoke({"context": context_text, "question": user_query})
         
-    with st.spinner("Analyzing rules..."):
-        try:
-            # Package the structural prompt context alongside the query
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=mocked_question)
-            ]
-            
-            response = llm.invoke(messages)
-            
-            st.success("🤖 **Rules Expert Verdict:**")
-            st.write(response.content)
-        except Exception as e:
-            st.error(f"Error communicating with AI engine: {e}")
+        st.chat_message("assistant").write(response)
+        
+        with st.spinner("🔊 Speaking response out loud..."):
+            speak_text(response)
+else:
+    st.warning("⚠️ Please populate the `./docs` directory to activate the voice dashboard system.")
